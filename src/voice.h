@@ -24,4 +24,4 @@
 G_DECLARE_FINAL_TYPE(BtEdbKickV, btedb_kickv, BTEDB, KICKV, GstObject);
 
 void btedb_kickv_process(BtEdbKickV* self, GstBuffer* gstbuf, GstMapInfo* info, GstClockTime running_time,
-  guint samples_per_buffer, guint rate);
+  guint requested_frames, guint rate);
