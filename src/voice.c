@@ -41,14 +41,17 @@ struct _BtEdbKickV
   gfloat tune;
 
   gfloat accum;
+  gfloat seconds;
   GstClockTime running_time;
-  GstClockTime time_on;
   GstClockTime time_off;
   BtEdbPropertiesSimple* props;
   GstBtToneConversion* tones;
 };
 
 G_DEFINE_TYPE(BtEdbKickV, btedb_kickv, GST_TYPE_OBJECT)
+
+static guint signal_bt_gfx_present;
+static guint signal_bt_gfx_invalidated;
 
 /*static gfloat db_to_gain(gfloat db) {
   return powf(10.0f, db / 20.0f);
@@ -67,13 +70,74 @@ void btedb_kickv_note_off(BtEdbKickV* self, GstClockTime time) {
 }
 
 void btedb_kickv_note_on(BtEdbKickV* self, GstClockTime time, gfloat anticlick) {
-  self->time_on = time;
+  self->seconds = 0;
   self->accum = 0;
+}
+
+static inline gfloat amp(const BtEdbKickV* const self, const gfloat seconds) {
+  return decay(seconds, 1, 0, self->amp_shape_a, self->amp_shape_b, self->amp_time, self->amp_shape_exp);
+}
+
+static void process(const BtEdbKickV* const self, gfloat* const outbuf, guint requested_frames,
+                    guint rate, guint note, gfloat* accum, gfloat* seconds) {
+  
+  const gfloat freq_note = (gfloat)gstbt_tone_conversion_translate_from_number(self->tones, note);
+
+  gdouble tune = powf(2, self->tune/12.0f);
+  
+  for (guint i = 0; i < requested_frames; ++i) {
+    const gfloat freq =
+      decay(*seconds, self->tone_start * tune, freq_note * tune, self->tone_shape_a, self->tone_shape_b,
+            self->tone_time, self->tone_shape_exp);
+      
+    const gfloat ampval = amp(self, *seconds);
+
+    outbuf[i] = sin(*accum) * ampval;
+    *accum += 2 * G_PI * 1.0f/rate * freq;
+    *seconds += 1.0f/rate;
+  }
+  
+  *accum = fmod(*accum, 2 * G_PI);
+}
+
+void btedb_kickv_process(
+  BtEdbKickV* const self, GstBuffer* const gstbuf, GstMapInfo* info, GstClockTime running_time, guint samples,
+  guint rate) {
+  // Necessary to update parameters from pattern.
+  //
+  // The parent machine is responsible for delgating process to any children it has; the pattern control group
+  // won't have called it for each voice. Although maybe it should?
+  gst_object_sync_values((GstObject*)self, GST_BUFFER_PTS(gstbuf));
+
+  process(self, (gfloat*)(info->data), samples, rate, self->note, &self->accum, &self->seconds);
+}
+
+static void update_gfx(BtEdbKickV* self, void* callback) {
+  const int width = 64;
+  const int height = 64;
+  u_int32_t gfx[width*height];
+
+  for (int i = 0; i < width*height; ++i) {
+    gfx[i] = 0x00000000;
+  }
+
+  for (int i = 0; i < width; i++) {
+    gfloat data = MIN(MAX(amp(self, (gfloat)i/width), -1), 1);
+    const guint y0 = height/2 - (height/2 * data);
+    const guint y1 = height/2 + (height/2 * data);
+    for (int y = y0; y < y1; ++y) {
+      g_assert(i + width * y < width*height);
+      gfx[i + width * y] = 0x80000000;
+    }
+  }
+
+  GBytes* bytes = g_bytes_new(gfx, sizeof(gfx));
+  g_signal_emit(self, signal_bt_gfx_present, 0, width, height, bytes);
+  g_bytes_unref(bytes);
 }
 
 static void set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   BtEdbKickV* self = (BtEdbKickV*)object;
-  g_assert(self->props);
 
   switch (prop_id) {
   case 1: {
@@ -87,52 +151,15 @@ static void set_property(GObject* object, guint prop_id, const GValue* value, GP
     break;
   }
   default:
+    g_assert(self->props);
     btedb_properties_simple_set(self->props, pspec, value);
+    g_signal_emit(self, signal_bt_gfx_invalidated, 0);
   }
-
-  //update_gfx(self, 0);
 }
 
 static void get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
   BtEdbKickV* self = (BtEdbKickV*)object;
   btedb_properties_simple_get(self->props, pspec, value);
-}
-
-void btedb_kickv_process(
-  BtEdbKickV* const self, GstBuffer* const gstbuf, GstMapInfo* info, GstClockTime running_time, guint samples,
-  guint rate) {
-  // Necessary to update parameters from pattern.
-  //
-  // The parent machine is responsible for delgating process to any children it has; the pattern control group
-  // won't have called it for each voice. Although maybe it should?
-  gst_object_sync_values((GstObject*)self, GST_BUFFER_PTS(gstbuf));
-
-  self->running_time = running_time;
-  
-  const gfloat freq_note = (gfloat)gstbt_tone_conversion_translate_from_number(self->tones, self->note);
-  gfloat* outbuf = (gfloat*)(info->data);
-  const guint requested_frames = samples;
-  gdouble seconds = (gdouble)(running_time - self->time_on) / GST_SECOND;
-
-  gdouble tune = powf(2, self->tune/12.0f);
-  
-  for (guint i = 0; i < requested_frames; ++i) {
-    if (seconds >= 0) {
-      const gfloat freq =
-        decay(seconds, self->tone_start * tune, freq_note * tune, self->tone_shape_a, self->tone_shape_b,
-              self->tone_time, self->tone_shape_exp);
-      
-      const gfloat amp = decay(seconds, 1, 0, self->amp_shape_a, self->amp_shape_b, self->amp_time,
-                               self->amp_shape_exp);
-
-      outbuf[i] = sin(self->accum) * amp;
-      self->accum += 2 * G_PI * 1.0f/rate * freq;
-    } else {
-      outbuf[i] = 0;
-    }
-  }
-  
-  self->accum = fmod(self->accum, 2 * G_PI);
 }
 
 static void dispose(GObject* object) {
@@ -176,7 +203,7 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("tone-shape-exp", "Tone Exp", "Tone Shape Exponent", 0, 10, 1.047619, flags));
+      g_param_spec_float("tone-shape-exp", "Tone Exp", "Tone Shape Exponent", 0, 3, 1.047619, flags));
 
     g_object_class_install_property(
       aclass, idx++,
@@ -192,12 +219,51 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("amp-shape-exp", "Amp Exp", "Amp Shape Exponent", 0, 10, 0.826922, flags));
+      g_param_spec_float("amp-shape-exp", "Amp Exp", "Amp Shape Exponent", 0, 3, 0.826922, flags));
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("tune", "Tune", "Tune", -1, 1, 0, flags));
+      g_param_spec_float("tune", "Tune", "Tune", -24, 24, 0, flags));
   }
+
+  signal_bt_gfx_present = 
+    g_signal_new (
+      "bt-gfx-present",
+      G_TYPE_FROM_CLASS(klass),
+      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+      0 /* offset */,
+      NULL /* accumulator */,
+      NULL /* accumulator data */,
+      NULL /* C marshaller */,
+      G_TYPE_NONE /* return_type */,
+      3     /* n_params */,
+      G_TYPE_UINT /* param width */,
+      G_TYPE_UINT /* param height */,
+      G_TYPE_BYTES /* param data */
+      );
+
+  signal_bt_gfx_invalidated =
+    g_signal_new (
+      "bt-gfx-invalidated",
+      G_TYPE_FROM_CLASS(klass),
+      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+      0 /* offset */,
+      NULL /* accumulator */,
+      NULL /* accumulator data */,
+      NULL /* C marshaller */,
+      G_TYPE_NONE /* return_type */,
+      0     /* n_params */);
+  
+  g_signal_new (
+    "bt-gfx-request",
+    G_TYPE_FROM_CLASS(klass),
+    G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+    0 /* offset */,
+    NULL /* accumulator */,
+    NULL /* accumulator data */,
+    NULL /* C marshaller */,
+    G_TYPE_NONE /* return_type */,
+    0     /* n_params */);
 }
 
 static void btedb_kickv_init(BtEdbKickV* const self) {
@@ -214,5 +280,7 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "tune", &self->tune);
 
   self->tones = gstbt_tone_conversion_new(GSTBT_TONE_CONVERSION_EQUAL_TEMPERAMENT);
-  self->time_on = -1L;
+  self->seconds = 3600;
+
+  g_signal_connect (self, "bt-gfx-request", G_CALLBACK (update_gfx), 0);
 }

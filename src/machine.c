@@ -33,6 +33,9 @@ GType btedb_kick_get_type(void);
 
 #define MAX_VOICES 16
 
+static guint signal_bt_gfx_present;
+static guint signal_bt_gfx_invalidated;
+
 typedef struct {
   GstBtAudioSynth parent;
 
@@ -72,8 +75,6 @@ G_DEFINE_TYPE_WITH_CODE (
   G_IMPLEMENT_INTERFACE (GST_TYPE_CHILD_PROXY, child_proxy_interface_init)
   G_IMPLEMENT_INTERFACE (GSTBT_TYPE_CHILD_BIN, NULL))
 
-static guint signal_bml_gfx_changed;
-
 static gboolean plugin_init(GstPlugin* plugin) {
   GST_DEBUG_CATEGORY_INIT(
     GST_CAT_DEFAULT,
@@ -105,41 +106,22 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
         "channels = (int) 1")
     );
 
-static void update_gfx(BtEdbKick* self, void* callback) {
-/*  const int width = 64;
-  const int height = 64;
-  gfloat data_in[width];
-  u_int32_t gfx[width*height];
+static void on_gfx_request(BtEdbKick* self, void* data) {
+  g_signal_emit_by_name(self->voices[0], "bt-gfx-request", 0);
+}
 
-  for (int i = 0; i < width*height; ++i) {
-    gfx[i] = 0x00000000;
-  }
+static void on_voice_gfx_present(void* voice, guint width, guint height, GBytes* data, BtEdbKick* self) {
+  g_signal_emit(self, signal_bt_gfx_present, 0, width, height, data);
+}
 
-  for (int i = 0; i < width; ++i) {
-    data_in[i] = -1.0f + 2 * ((gfloat)i/width);
-  }
-
-  kick(self->kick, data_in, width);
-  
-  for (int i = 1; i < width; ++i) {
-    const gfloat val0 = 1.0f - ((data_in[i-1] + 1) / 2);
-    const gfloat val1 = 1.0f - ((data_in[i] + 1) / 2);
-    const guint y0 = MAX(MIN((gint)(val0 * (height-1)), height-1), 0);
-    const guint y1 = MAX(MIN((gint)(val1 * (height-1)), height-1), 0);
-    for (int y = MIN(y0,y1); y <= MAX(y0,y1); ++y) {
-      gfx[i + width * y] = 0xFF000000;
-    }
-  }
-  
-  g_signal_emit(self, signal_bml_gfx_changed, 0, width, height, g_bytes_new(gfx, sizeof(gfx)));*/
+static void on_voice_gfx_invalidated(void* voice, BtEdbKick* self) {
+  g_signal_emit(self, signal_bt_gfx_invalidated, 0);
 }
 
 static void set_property (GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
   BtEdbKick* self = (BtEdbKick*)object;
   g_assert(self->props);
   btedb_properties_simple_set(self->props, pspec, value);
-
-//  update_gfx(self, 0);
 }
 
 static void get_property (GObject * object, guint prop_id, GValue * value, GParamSpec * pspec) {
@@ -162,6 +144,8 @@ static void dispose(GObject* object) {
   BtEdbKick* self = (BtEdbKick*)object;
   btedb_properties_simple_free(self->props);
   self->props = 0;
+  g_signal_handlers_disconnect_by_func(self, on_voice_gfx_present, self);
+  g_signal_handlers_disconnect_by_func(self, on_voice_gfx_invalidated, self);
 }
 
 static void btedb_kick_class_init(BtEdbKickClass* const klass) {
@@ -184,33 +168,6 @@ static void btedb_kick_class_init(BtEdbKickClass* const klass) {
     g_object_class_install_property(
       aclass, idx++,
       g_param_spec_ulong("children", "Children", "", 0, MAX_VOICES, 1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-    
-    signal_bml_gfx_changed = 
-      g_signal_new (
-        "bt-gfx-changed",
-        G_TYPE_FROM_CLASS (aclass),
-        G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-        0 /* offset */,
-        NULL /* accumulator */,
-        NULL /* accumulator data */,
-        NULL /* C marshaller */,
-        G_TYPE_NONE /* return_type */,
-        3     /* n_params */,
-        G_TYPE_UINT /* param width */,
-        G_TYPE_UINT /* param height */,
-        G_TYPE_BYTES /* param data */
-        );
-
-      g_signal_new (
-        "bt-gfx-refresh",
-        G_TYPE_FROM_CLASS (aclass),
-        G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-        0 /* offset */,
-        NULL /* accumulator */,
-        NULL /* accumulator data */,
-        NULL /* C marshaller */,
-        G_TYPE_NONE /* return_type */,
-        0     /* n_params */);
   }
 
   {
@@ -234,6 +191,46 @@ static void btedb_kick_class_init(BtEdbKickClass* const klass) {
     GstBtAudioSynthClass* const aclass = (GstBtAudioSynthClass*)klass;
     aclass->process = process;
   }
+
+  // These signals are delegated to the first child voice.
+  signal_bt_gfx_present = 
+    g_signal_new (
+      "bt-gfx-present",
+      G_TYPE_FROM_CLASS(klass),
+      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+      0 /* offset */,
+      NULL /* accumulator */,
+      NULL /* accumulator data */,
+      NULL /* C marshaller */,
+      G_TYPE_NONE /* return_type */,
+      3     /* n_params */,
+      G_TYPE_UINT /* param width */,
+      G_TYPE_UINT /* param height */,
+      G_TYPE_BYTES /* param data */
+      );
+
+  signal_bt_gfx_invalidated =
+    g_signal_new (
+      "bt-gfx-invalidated",
+      G_TYPE_FROM_CLASS(klass),
+      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+      0 /* offset */,
+      NULL /* accumulator */,
+      NULL /* accumulator data */,
+      NULL /* C marshaller */,
+      G_TYPE_NONE /* return_type */,
+      0     /* n_params */);
+
+  g_signal_new (
+    "bt-gfx-request",
+    G_TYPE_FROM_CLASS(klass),
+    G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+    0 /* offset */,
+    NULL /* accumulator */,
+    NULL /* accumulator data */,
+    NULL /* C marshaller */,
+    G_TYPE_NONE /* return_type */,
+    0     /* n_params */);
 }
 
 static void btedb_kick_init(BtEdbKick* const self) {
@@ -252,5 +249,7 @@ static void btedb_kick_init(BtEdbKick* const self) {
     self->voices[i] = voice;
   }
     
-  g_signal_connect (self, "bt-gfx-refresh", G_CALLBACK (update_gfx), 0);
+  g_signal_connect (self->voices[0], "bt-gfx-present", G_CALLBACK (on_voice_gfx_present), self);
+  g_signal_connect (self->voices[0], "bt-gfx-invalidated", G_CALLBACK (on_voice_gfx_invalidated), self);
+  g_signal_connect (self, "bt-gfx-request", G_CALLBACK (on_gfx_request), 0);
 }
