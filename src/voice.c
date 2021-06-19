@@ -47,6 +47,17 @@ struct _BtEdbKickV
   gfloat noise_shape_b;
   gfloat noise_shape_exp;
   gfloat noise_vol;
+  gfloat distort;
+  gfloat distort_order0;
+  gfloat distort_order1;
+  gfloat distort_order2;
+  gfloat distort_order3;
+  gfloat distort_order4;
+  gfloat distort_order5;
+  gfloat distort_order6;
+  gfloat distort_order7;
+  gfloat distort_order8;
+  gfloat distort_order9;
 
   gfloat c_tone_start;
   gfloat c_tone_time;
@@ -65,7 +76,7 @@ struct _BtEdbKickV
   guint lcg_state[PINK_NOISE_OCTAVES];
   gfloat lcg_noise[PINK_NOISE_OCTAVES];
   guint lcg_accum;
-  gfloat accum;
+  gfloat accum[11];
   gfloat seconds;
   GstClockTime running_time;
   GstClockTime time_off;
@@ -109,7 +120,7 @@ void btedb_kickv_note_off(BtEdbKickV* self, GstClockTime time) {
 
 void btedb_kickv_note_on(BtEdbKickV* self, GstClockTime time, gfloat anticlick) {
   self->seconds = 0;
-  self->accum = 0;
+  //self->accum = 0;
 }
 
 static inline gfloat amp(const BtEdbKickV* const self, const gfloat seconds) {
@@ -119,6 +130,12 @@ static inline gfloat amp(const BtEdbKickV* const self, const gfloat seconds) {
 static inline gfloat freq(const BtEdbKickV* const self, gfloat seconds, gfloat start, gfloat end) {
   return decay(seconds, start, end, self->c_tone_shape_a, self->c_tone_shape_b, self->c_tone_time,
                self->c_tone_shape_exp);
+}
+
+static inline gfloat osc(gfloat* accum, gfloat timedelta, gfloat freqval, gfloat harmonic) {
+  gfloat result = sin(*accum);
+  *accum += 2 * G_PI * timedelta * freqval * harmonic;
+  return result;
 }
 
 void btedb_kickv_process(
@@ -135,10 +152,26 @@ void btedb_kickv_process(
   const gfloat freq_start = self->c_tone_start * tune;
 
   gfloat* outbuf = (gfloat*)(info->data);
+  const gfloat timedelta = 1.0f/rate;
   
   for (guint i = 0; i < requested_frames; ++i) {
-    outbuf[i] = sin(self->accum) * amp(self, self->seconds) * amp(self, self->seconds);
-    self->accum += 2 * G_PI * 1.0f/rate * freq(self, self->seconds, freq_start, freq_note);
+    {
+      gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
+      gfloat val = osc(&self->accum[0], timedelta, freqval, 1);
+
+      val += osc(&self->accum[1], timedelta, freqval, 2) * self->distort_order0;
+      val += osc(&self->accum[2], timedelta, freqval, 3) * self->distort_order1;
+      val += osc(&self->accum[3], timedelta, freqval, 4) * self->distort_order2;
+      val += osc(&self->accum[4], timedelta, freqval, 5) * self->distort_order3;
+      val += osc(&self->accum[5], timedelta, freqval, 6) * self->distort_order4;
+      val += osc(&self->accum[6], timedelta, freqval, 7) * self->distort_order5;
+      val += osc(&self->accum[7], timedelta, freqval, 8) * self->distort_order6;
+      val += osc(&self->accum[8], timedelta, freqval, 9) * self->distort_order7;
+      val += osc(&self->accum[9], timedelta, freqval, 10) * self->distort_order8;
+      val += osc(&self->accum[10], timedelta, freqval, 11) * self->distort_order9;
+      
+      outbuf[i] = val * amp(self, self->seconds);
+    }
     
     // https://www.firstpr.com.au/dsp/pink-noise/#Voss-McCartney
     {
@@ -157,10 +190,11 @@ void btedb_kickv_process(
         self->noise_vol;
     }
     
-    self->seconds += 1.0f/rate;
+    self->seconds += timedelta;
   }
-  
-  self->accum = fmod(self->accum, 2 * G_PI);
+
+  for (guint i = 0; i < 11; ++i)
+    self->accum[i] = fmod(self->accum[i], 2 * G_PI);
 }
 
 static void update_gfx(BtEdbKickV* self, void* callback) {
@@ -325,6 +359,40 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       aclass, idx++,
       g_param_spec_float("noise-shape-exp", "Noise Exp", "Noise Shape Exponent", 0, 1, 0.672, flags));
 
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort", "Distort", "Distortion", 0, 1, 0, flags));
+
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order0", "Dist Order 0", "Distortion Order 0", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order1", "Dist Order 1", "Distortion Order 1", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order2", "Dist Order 2", "Distortion Order 2", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order3", "Dist Order 3", "Distortion Order 3", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order4", "Dist Order 4", "Distortion Order 4", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order5", "Dist Order 5", "Distortion Order 5", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order6", "Dist Order 6", "Distortion Order 6", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order7", "Dist Order 7", "Distortion Order 7", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order8", "Dist Order 8", "Distortion Order 8", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("distort-order9", "Dist Order 9", "Distortion Order 9", -1, 1, 0, flags));
   }
 
   signal_bt_gfx_present = 
@@ -384,6 +452,17 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "noise-shape-a", &self->noise_shape_a);
   btedb_properties_simple_add(self->props, "noise-shape-b", &self->noise_shape_b);
   btedb_properties_simple_add(self->props, "noise-shape-exp", &self->noise_shape_exp);
+  btedb_properties_simple_add(self->props, "distort", &self->distort);
+  btedb_properties_simple_add(self->props, "distort-order0", &self->distort_order0);
+  btedb_properties_simple_add(self->props, "distort-order1", &self->distort_order1);
+  btedb_properties_simple_add(self->props, "distort-order2", &self->distort_order2);
+  btedb_properties_simple_add(self->props, "distort-order3", &self->distort_order3);
+  btedb_properties_simple_add(self->props, "distort-order4", &self->distort_order4);
+  btedb_properties_simple_add(self->props, "distort-order5", &self->distort_order5);
+  btedb_properties_simple_add(self->props, "distort-order6", &self->distort_order6);
+  btedb_properties_simple_add(self->props, "distort-order7", &self->distort_order7);
+  btedb_properties_simple_add(self->props, "distort-order8", &self->distort_order8);
+  btedb_properties_simple_add(self->props, "distort-order9", &self->distort_order9);
 
   self->tones = gstbt_tone_conversion_new(GSTBT_TONE_CONVERSION_EQUAL_TEMPERAMENT);
   self->seconds = 3600;
