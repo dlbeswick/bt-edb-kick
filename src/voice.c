@@ -48,6 +48,7 @@ struct _BtEdbKickV
   gfloat noise_shape_b;
   gfloat noise_shape_exp;
   gfloat noise_vol;
+  gfloat fundamental_vol;
   gfloat overtone_vol;
   gfloat overtone0;
   gfloat overtone1;
@@ -60,6 +61,8 @@ struct _BtEdbKickV
   gfloat overtone8;
   gfloat overtone9;
   gfloat volume;
+  guint retrigger;
+  gfloat retrigger_period;
 
   gfloat c_tone_start;
   gfloat c_tone_time;
@@ -74,7 +77,10 @@ struct _BtEdbKickV
   gfloat c_noise_shape_a;
   gfloat c_noise_shape_b;
   gfloat c_noise_shape_exp;
+  gfloat c_retrigger_period;
   
+  guint retrig_count;
+  gfloat retrig_period_cur;
   guint lcg_state[PINK_NOISE_OCTAVES];
   gfloat lcg_noise[PINK_NOISE_OCTAVES];
   guint lcg_accum;
@@ -120,8 +126,10 @@ void btedb_kickv_note_off(BtEdbKickV* self, GstClockTime time) {
   self->time_off = time;
 }
 
-void btedb_kickv_note_on(BtEdbKickV* self, GstClockTime time, gfloat anticlick) {
-  self->seconds = 0;
+static void btedb_kickv_note_on(BtEdbKickV* self, gfloat seconds, guint retrig_cnt) {
+  self->seconds = seconds;
+  self->retrig_count = retrig_cnt;
+  self->retrig_period_cur = self->c_retrigger_period;
   //self->accum = 0;
 }
 
@@ -169,18 +177,19 @@ void btedb_kickv_process(
   overtone_vols[9] = self->overtone9 * self->overtone_vol;
   
   for (guint i = 0; i < requested_frames; ++i) {
-    {
+    if (self->fundamental_vol != 0.0) {
       gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
-      gfloat val = osc(&self->accum[0], timedelta, freqval, 1);
+      gfloat val = osc(&self->accum[0], timedelta, freqval, 1) * self->fundamental_vol;
 
       for (guint j = 0; j < OVERTONES; ++j)
-        val += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
+        if (overtone_vols[j] != 0.0)
+          val += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
       
       outbuf[i] = val * amp(self, self->seconds);
     }
     
     // https://www.firstpr.com.au/dsp/pink-noise/#Voss-McCartney
-    {
+    if (self->noise_vol != 0.0) {
       for (guint j = 0; j < self->lcg_accum % PINK_NOISE_OCTAVES; ++j)
         self->lcg_noise[j] = lcg(&self->lcg_state[j]) / PINK_NOISE_OCTAVES;
 
@@ -194,6 +203,15 @@ void btedb_kickv_process(
         decay(self->seconds, 1, 0, self->c_noise_shape_a, self->c_noise_shape_b, self->c_noise_time,
               self->c_noise_shape_exp) *
         self->noise_vol;
+
+    }
+
+    if (self->retrig_count > 0) {
+      self->retrig_period_cur -= timedelta;
+      if (self->retrig_period_cur <= 0) {
+        btedb_kickv_note_on(self, -self->retrig_period_cur, --self->retrig_count);
+        self->retrig_period_cur = self->c_retrigger_period;
+      }
     }
     
     outbuf[i] *= self->volume;
@@ -253,7 +271,7 @@ static void set_property(GObject* object, guint prop_id, const GValue* value, GP
       btedb_kickv_note_off(self, self->running_time);
     } else if (note != GSTBT_NOTE_NONE) {
       self->note = note;
-      btedb_kickv_note_on(self, self->running_time, 0.01f);
+      btedb_kickv_note_on(self, 0, self->retrigger);
     }
     break;
   }
@@ -274,6 +292,7 @@ static void set_property(GObject* object, guint prop_id, const GValue* value, GP
     self->c_noise_shape_b = 0.01 * powf(10, self->noise_shape_b * 3);
     self->c_noise_time = 0.001 * powf(10, self->noise_time * 4);
     self->c_noise_shape_exp = 0.01 * powf(10, self->noise_shape_exp * 3);
+    self->c_retrigger_period = 0.001 * powf(10, self->retrigger_period * 3);
   
     g_signal_emit(self, signal_bt_gfx_invalidated, 0);
   }
@@ -310,6 +329,14 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
     g_object_class_install_property(
       aclass, idx++,
       g_param_spec_float("volume", "Volume", "Volume", 0, 5, 0, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_uint("retrigger", "Retrigger", "Retrigger Count", 0, 20, 0, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("retrigger-period", "Retrg Period", "Retrigger Period", 0, 1, 0, flags));
     
     g_object_class_install_property(
       aclass, idx++,
@@ -371,6 +398,10 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       aclass, idx++,
       g_param_spec_float("noise-shape-exp", "Noise Exp", "Noise Shape Exponent", 0, 1, 0.672, flags));
 
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("fundamental-vol", "Fundamental Vol", "Fundamental Volume", 0, 1, 1, flags));
+    
     g_object_class_install_property(
       aclass, idx++,
       g_param_spec_float("overtone-vol", "Overtone Vol", "Overtone Volume", 0, 1, 0, flags));
@@ -464,6 +495,7 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "noise-shape-a", &self->noise_shape_a);
   btedb_properties_simple_add(self->props, "noise-shape-b", &self->noise_shape_b);
   btedb_properties_simple_add(self->props, "noise-shape-exp", &self->noise_shape_exp);
+  btedb_properties_simple_add(self->props, "fundamental-vol", &self->fundamental_vol);
   btedb_properties_simple_add(self->props, "overtone-vol", &self->overtone_vol);
   btedb_properties_simple_add(self->props, "overtone0", &self->overtone0);
   btedb_properties_simple_add(self->props, "overtone1", &self->overtone1);
@@ -476,6 +508,8 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "overtone8", &self->overtone8);
   btedb_properties_simple_add(self->props, "overtone9", &self->overtone9);
   btedb_properties_simple_add(self->props, "volume", &self->volume);
+  btedb_properties_simple_add(self->props, "retrigger", &self->retrigger);
+  btedb_properties_simple_add(self->props, "retrigger-period", &self->retrigger_period);
 
   self->tones = gstbt_tone_conversion_new(GSTBT_TONE_CONVERSION_EQUAL_TEMPERAMENT);
   self->seconds = 3600;
