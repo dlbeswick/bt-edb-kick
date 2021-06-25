@@ -21,12 +21,15 @@
 #include "src/properties_simple.h"
 #include "libbuzztrax-gst/musicenums.h"
 #include "libbuzztrax-gst/toneconversion.h"
+#include "libbuzztrax-gst/ui.h"
 #include <gst/gstobject.h>
 #include <math.h>
 
 #define PINK_NOISE_OCTAVES 4
 #define OVERTONES 10
 
+#define GFX_WIDTH 64
+#define GFX_HEIGHT 64
 
 struct _BtEdbKickV
 {
@@ -90,11 +93,13 @@ struct _BtEdbKickV
   GstClockTime time_off;
   BtEdbPropertiesSimple* props;
   GstBtToneConversion* tones;
+
+  BtUiCustomGfx gfx;
+  guint32 gfx_data[GFX_WIDTH * GFX_HEIGHT];
 };
 
 G_DEFINE_TYPE(BtEdbKickV, btedb_kickv, GST_TYPE_OBJECT)
 
-static guint signal_bt_gfx_present;
 static guint signal_bt_gfx_invalidated;
 
 /*static gfloat db_to_gain(gfloat db) {
@@ -162,6 +167,7 @@ void btedb_kickv_process(
   const gfloat freq_start = self->c_tone_start * tune;
 
   gfloat* outbuf = (gfloat*)(info->data);
+  
   const gfloat timedelta = 1.0f/rate;
 
   gfloat overtone_vols[OVERTONES];
@@ -186,6 +192,8 @@ void btedb_kickv_process(
           val += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
       
       outbuf[i] = val * amp(self, self->seconds);
+    } else {
+      outbuf[i] = 0.0f;
     }
     
     // https://www.firstpr.com.au/dsp/pink-noise/#Voss-McCartney
@@ -223,42 +231,38 @@ void btedb_kickv_process(
     self->accum[i] = fmod(self->accum[i], 2 * G_PI);
 }
 
-static void update_gfx(BtEdbKickV* self, void* callback) {
-  const int width = 64;
-  const int height = 64;
-  u_int32_t gfx[width*height];
+static const BtUiCustomGfx* on_gfx_request(BtEdbKickV* self) {
+  guint32* const gfx = self->gfx.data;
 
-  for (int i = 0; i < width*height; ++i) {
+  for (int i = 0; i < GFX_WIDTH*GFX_HEIGHT; ++i) {
     gfx[i] = 0x00000000;
   }
 
   // Show 0.5 seconds of the amplitude envelope.
-  for (int i = 0; i < width; i++) {
-    const gfloat data = MIN(MAX(amp(self, (gfloat)i/width * 0.5), -1), 1);
-    const guint y0 = height/2 - (height/2 * data);
-    const guint y1 = height/2 + (height/2 * data);
+  for (int i = 0; i < GFX_WIDTH; i++) {
+    const gfloat data = MIN(MAX(amp(self, (gfloat)i/GFX_WIDTH * 0.5), -1), 1);
+    const guint y0 = GFX_HEIGHT/2 - (GFX_HEIGHT/2 * data);
+    const guint y1 = GFX_HEIGHT/2 + (GFX_HEIGHT/2 * data);
     for (int y = y0; y < y1; ++y) {
-      g_assert(i + width * y < width*height);
-      gfx[i + width * y] = 0x80000000;
+      g_assert(i + GFX_WIDTH * y < GFX_WIDTH*GFX_HEIGHT);
+      gfx[i + GFX_WIDTH * y] = 0x80000000;
     }
   }
 
   // Show 0.5 seconds of the frequency envelope.
   gfloat data_ = MIN(MAX(freq(self, 0, 1, 0), -1), 1);
-  for (int i = 0; i < width; i++) {
-    const gfloat data = MIN(MAX(freq(self, (gfloat)i/width * 0.5, 1, 0), -1), 1);
-    const guint y0 = height - height * data_;
-    const guint y1 = height - height * data;
+  for (int i = 0; i < GFX_WIDTH; i++) {
+    const gfloat data = MIN(MAX(freq(self, (gfloat)i/GFX_WIDTH * 0.5, 1, 0), -1), 1);
+    const guint y0 = GFX_HEIGHT - GFX_HEIGHT * data_;
+    const guint y1 = GFX_HEIGHT - GFX_HEIGHT * data;
     for (int y = MIN(y0,y1); y < MAX(y0,y1); ++y) {
-      g_assert(i + width * y < width*height);
-      gfx[i + width * y] = 0xFF00FFFF;
+      g_assert(i + GFX_WIDTH * y < GFX_WIDTH*GFX_HEIGHT);
+      gfx[i + GFX_WIDTH * y] = 0xFF00FFFF;
     }
     data_ = data;
   }
-  
-  GBytes* bytes = g_bytes_new(gfx, sizeof(gfx));
-  g_signal_emit(self, signal_bt_gfx_present, 0, width, height, bytes);
-  g_bytes_unref(bytes);
+
+  return &self->gfx;
 }
 
 static void set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
@@ -328,7 +332,7 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
     
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("volume", "Volume", "Volume", 0, 5, 0, flags));
+      g_param_spec_float("volume", "Volume", "Volume", 0, 5, 1, flags));
     
     g_object_class_install_property(
       aclass, idx++,
@@ -344,7 +348,7 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("tone-time", "Tone Time", "Tone Time", 0, 1, 0.5, flags));
+      g_param_spec_float("tone-time", "Tone Time", "Tone Time", 0, 1, 0, flags));
       
     g_object_class_install_property(
       aclass, idx++,
@@ -360,7 +364,7 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("amp-time", "Amp Time", "Amp Time", 0, 1, 0.5, flags));
+      g_param_spec_float("amp-time", "Amp Time", "Amp Time", 0, 1, 0, flags));
       
     g_object_class_install_property(
       aclass, idx++,
@@ -384,7 +388,7 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
     
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("noise-time", "Noise Time", "Noise Time", 0, 1, 0.16, flags));
+      g_param_spec_float("noise-time", "Noise Time", "Noise Time", 0, 1, 0, flags));
     
     g_object_class_install_property(
       aclass, idx++,
@@ -438,27 +442,11 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       g_param_spec_float("overtone9", "Overtone 9", "Overtone 9", -1, 1, 0, flags));
   }
 
-  signal_bt_gfx_present = 
-    g_signal_new (
-      "bt-gfx-present",
-      G_TYPE_FROM_CLASS(klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-      0 /* offset */,
-      NULL /* accumulator */,
-      NULL /* accumulator data */,
-      NULL /* C marshaller */,
-      G_TYPE_NONE /* return_type */,
-      3     /* n_params */,
-      G_TYPE_UINT /* param width */,
-      G_TYPE_UINT /* param height */,
-      G_TYPE_BYTES /* param data */
-      );
-
   signal_bt_gfx_invalidated =
     g_signal_new (
       "bt-gfx-invalidated",
-      G_TYPE_FROM_CLASS(klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
+      G_OBJECT_CLASS_TYPE(klass),
+      G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
       0 /* offset */,
       NULL /* accumulator */,
       NULL /* accumulator data */,
@@ -466,15 +454,15 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       G_TYPE_NONE /* return_type */,
       0     /* n_params */);
   
-  g_signal_new (
+  g_signal_new_class_handler (
     "bt-gfx-request",
-    G_TYPE_FROM_CLASS(klass),
-    G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-    0 /* offset */,
+    G_OBJECT_CLASS_TYPE(klass),
+    G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
+    G_CALLBACK (on_gfx_request),
     NULL /* accumulator */,
     NULL /* accumulator data */,
     NULL /* C marshaller */,
-    G_TYPE_NONE /* return_type */,
+    G_TYPE_POINTER /* return_type */,
     0     /* n_params */);
 }
 
@@ -514,8 +502,8 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   self->tones = gstbt_tone_conversion_new(GSTBT_TONE_CONVERSION_EQUAL_TEMPERAMENT);
   self->seconds = 3600;
 
-  g_signal_connect (self, "bt-gfx-request", G_CALLBACK (update_gfx), 0);
-
   for (guint i = 0; i < PINK_NOISE_OCTAVES; ++i)
     self->lcg_state[i] = i;
+
+  self->gfx = (struct BtUiCustomGfx){0, GFX_WIDTH, GFX_HEIGHT, self->gfx_data};
 }

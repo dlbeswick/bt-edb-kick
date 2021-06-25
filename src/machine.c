@@ -24,6 +24,7 @@
 #include "libbuzztrax-gst/audiosynth.h"
 #include "libbuzztrax-gst/childbin.h"
 #include "libbuzztrax-gst/propertymeta.h"
+#include "libbuzztrax-gst/ui.h"
 
 #include <math.h>
 
@@ -33,7 +34,6 @@ GType btedb_kick_get_type(void);
 
 #define MAX_VOICES 16
 
-static guint signal_bt_gfx_present;
 static guint signal_bt_gfx_invalidated;
 
 typedef struct {
@@ -106,12 +106,10 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
         "channels = (int) 1")
     );
 
-static void on_gfx_request(BtEdbKick* self, void* data) {
-  g_signal_emit_by_name(self->voices[0], "bt-gfx-request", 0);
-}
-
-static void on_voice_gfx_present(void* voice, guint width, guint height, GBytes* data, BtEdbKick* self) {
-  g_signal_emit(self, signal_bt_gfx_present, 0, width, height, data);
+static const BtUiCustomGfx* on_gfx_request(BtEdbKick* self) {
+  BtUiCustomGfx* result;
+  g_signal_emit_by_name(self->voices[0], "bt-gfx-request", &result);
+  return result;
 }
 
 static void on_voice_gfx_invalidated(void* voice, BtEdbKick* self) {
@@ -144,7 +142,6 @@ static void dispose(GObject* object) {
   BtEdbKick* self = (BtEdbKick*)object;
   btedb_properties_simple_free(self->props);
   self->props = 0;
-  g_signal_handlers_disconnect_by_func(self, on_voice_gfx_present, self);
   g_signal_handlers_disconnect_by_func(self, on_voice_gfx_invalidated, self);
 }
 
@@ -193,43 +190,27 @@ static void btedb_kick_class_init(BtEdbKickClass* const klass) {
   }
 
   // These signals are delegated to the first child voice.
-  signal_bt_gfx_present = 
-    g_signal_new (
-      "bt-gfx-present",
-      G_TYPE_FROM_CLASS(klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-      0 /* offset */,
-      NULL /* accumulator */,
-      NULL /* accumulator data */,
-      NULL /* C marshaller */,
-      G_TYPE_NONE /* return_type */,
-      3     /* n_params */,
-      G_TYPE_UINT /* param width */,
-      G_TYPE_UINT /* param height */,
-      G_TYPE_BYTES /* param data */
-      );
-
   signal_bt_gfx_invalidated =
     g_signal_new (
       "bt-gfx-invalidated",
-      G_TYPE_FROM_CLASS(klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-      0 /* offset */,
+      G_OBJECT_CLASS_TYPE(klass),
+      G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
+      0,
       NULL /* accumulator */,
       NULL /* accumulator data */,
       NULL /* C marshaller */,
       G_TYPE_NONE /* return_type */,
       0     /* n_params */);
 
-  g_signal_new (
+  g_signal_new_class_handler (
     "bt-gfx-request",
-    G_TYPE_FROM_CLASS(klass),
-    G_SIGNAL_RUN_LAST | G_SIGNAL_NO_RECURSE | G_SIGNAL_NO_HOOKS,
-    0 /* offset */,
+    G_OBJECT_CLASS_TYPE(klass),
+    G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
+    G_CALLBACK(on_gfx_request),
     NULL /* accumulator */,
     NULL /* accumulator data */,
     NULL /* C marshaller */,
-    G_TYPE_NONE /* return_type */,
+    G_TYPE_POINTER /* return_type */,
     0     /* n_params */);
 }
 
@@ -249,7 +230,5 @@ static void btedb_kick_init(BtEdbKick* const self) {
     self->voices[i] = voice;
   }
     
-  g_signal_connect (self->voices[0], "bt-gfx-present", G_CALLBACK (on_voice_gfx_present), self);
   g_signal_connect (self->voices[0], "bt-gfx-invalidated", G_CALLBACK (on_voice_gfx_invalidated), self);
-  g_signal_connect (self, "bt-gfx-request", G_CALLBACK (on_gfx_request), 0);
 }
