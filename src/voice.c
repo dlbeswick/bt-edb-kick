@@ -25,7 +25,7 @@
 #include <gst/gstobject.h>
 #include <math.h>
 
-#define PINK_NOISE_OCTAVES 4
+#define PINK_NOISE_OCTAVES 17
 #define OVERTONES 10
 
 #define GFX_WIDTH 64
@@ -46,6 +46,7 @@ struct _BtEdbKickV
   gfloat amp_shape_b;
   gfloat amp_shape_exp;
   gfloat tune;
+  gfloat noise_octaves;
   gfloat noise_time;
   gfloat noise_shape_a;
   gfloat noise_shape_b;
@@ -86,7 +87,8 @@ struct _BtEdbKickV
   gfloat retrig_period_cur;
   guint lcg_state[PINK_NOISE_OCTAVES];
   gfloat lcg_noise[PINK_NOISE_OCTAVES];
-  guint lcg_accum;
+  gfloat noise;
+  gint16 pink_accum;
   gfloat accum[OVERTONES + 1];
   gfloat seconds;
   GstClockTime running_time;
@@ -181,7 +183,7 @@ void btedb_kickv_process(
   overtone_vols[7] = self->overtone7 * self->overtone_vol;
   overtone_vols[8] = self->overtone8 * self->overtone_vol;
   overtone_vols[9] = self->overtone9 * self->overtone_vol;
-  
+
   for (guint i = 0; i < requested_frames; ++i) {
     if (self->fundamental_vol != 0.0) {
       gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
@@ -198,20 +200,30 @@ void btedb_kickv_process(
     
     // https://www.firstpr.com.au/dsp/pink-noise/#Voss-McCartney
     if (self->noise_vol != 0.0) {
-      for (guint j = 0; j < self->lcg_accum % PINK_NOISE_OCTAVES; ++j)
-        self->lcg_noise[j] = lcg(&self->lcg_state[j]) / PINK_NOISE_OCTAVES;
+      // Add base white noise
+      self->noise -= self->lcg_noise[0];
+      self->lcg_noise[0] = lcg(&self->lcg_state[0]);
+      self->noise += self->lcg_noise[0];
 
-      gfloat noise = 0;
-      for (guint j = 0; j < PINK_NOISE_OCTAVES; ++j)
-        noise += self->lcg_noise[j];
-      ++self->lcg_accum;
+      // Subtracting the old noise value from an accumulated noise value avoids having to sum x stored noise values
+      // each sample. As a result, some inertia is maintained if sweeping the octave value, but not a big deal.
+      guint update_idx = __builtin_ctz(self->pink_accum)+1;
+      self->noise -= self->lcg_noise[update_idx];
+      if (update_idx <= self->noise_octaves) {
+        gfloat gain = MIN(1.0f, self->noise_octaves - (gfloat)(update_idx+1));
+        self->lcg_noise[update_idx] = lcg(&self->lcg_state[update_idx]) * gain;
+        self->noise += self->lcg_noise[update_idx];
+      } else {
+        self->lcg_noise[update_idx] = 0;
+      }
+
+      ++self->pink_accum;
 
       outbuf[i] +=
-        noise *
+        (self->noise / self->noise_octaves) *
         decay(self->seconds, 1, 0, self->c_noise_shape_a, self->c_noise_shape_b, self->c_noise_time,
               self->c_noise_shape_exp) *
         self->noise_vol;
-
     }
 
     if (self->retrig_count > 0) {
@@ -388,6 +400,11 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
     
     g_object_class_install_property(
       aclass, idx++,
+      g_param_spec_float("noise-octaves", "Noise Oct.", "Noise Octaves", 1.99999,
+                         PINK_NOISE_OCTAVES+0.99999, 4, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
       g_param_spec_float("noise-time", "Noise Time", "Noise Time", 0, 1, 0, flags));
     
     g_object_class_install_property(
@@ -404,42 +421,42 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("fundamental-vol", "Fundamental Vol", "Fundamental Volume", 0, 1, 1, flags));
+      g_param_spec_float("fundamental-vol", "Fund. Vol", "Fundamental Volume", 0, 1, 1, flags));
     
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone-vol", "Overtone Vol", "Overtone Volume", 0, 1, 0, flags));
+      g_param_spec_float("overtone-vol", "Otone. Vol", "Overtone Volume", 0, 1, 0, flags));
 
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone0", "Overtone 0", "Overtone 0", -1, 1, 0, flags));
+      g_param_spec_float("overtone0", "Otone 0", "Overtone 0", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone1", "Overtone 1", "Overtone 1", -1, 1, 0, flags));
+      g_param_spec_float("overtone1", "Otone 1", "Overtone 1", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone2", "Overtone 2", "Overtone 2", -1, 1, 0, flags));
+      g_param_spec_float("overtone2", "Otone 2", "Overtone 2", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone3", "Overtone 3", "Overtone 3", -1, 1, 0, flags));
+      g_param_spec_float("overtone3", "Otone 3", "Overtone 3", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone4", "Overtone 4", "Overtone 4", -1, 1, 0, flags));
+      g_param_spec_float("overtone4", "Otone 4", "Overtone 4", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone5", "Overtone 5", "Overtone 5", -1, 1, 0, flags));
+      g_param_spec_float("overtone5", "Otone 5", "Overtone 5", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone6", "Overtone 6", "Overtone 6", -1, 1, 0, flags));
+      g_param_spec_float("overtone6", "Otone 6", "Overtone 6", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone7", "Overtone 7", "Overtone 7", -1, 1, 0, flags));
+      g_param_spec_float("overtone7", "Otone 7", "Overtone 7", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone8", "Overtone 8", "Overtone 8", -1, 1, 0, flags));
+      g_param_spec_float("overtone8", "Otone 8", "Overtone 8", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
-      g_param_spec_float("overtone9", "Overtone 9", "Overtone 9", -1, 1, 0, flags));
+      g_param_spec_float("overtone9", "Otone 9", "Overtone 9", -1, 1, 0, flags));
   }
 
   signal_bt_gfx_invalidated =
@@ -479,6 +496,7 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "amp-shape-exp", &self->amp_shape_exp);
   btedb_properties_simple_add(self->props, "tune", &self->tune);
   btedb_properties_simple_add(self->props, "noise-vol", &self->noise_vol);
+  btedb_properties_simple_add(self->props, "noise-octaves", &self->noise_octaves);
   btedb_properties_simple_add(self->props, "noise-time", &self->noise_time);
   btedb_properties_simple_add(self->props, "noise-shape-a", &self->noise_shape_a);
   btedb_properties_simple_add(self->props, "noise-shape-b", &self->noise_shape_b);
@@ -506,4 +524,5 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
     self->lcg_state[i] = i;
 
   self->gfx = (struct BtUiCustomGfx){0, GFX_WIDTH, GFX_HEIGHT, self->gfx_data};
+  self->pink_accum = 1;
 }
