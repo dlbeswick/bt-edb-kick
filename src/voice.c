@@ -86,7 +86,7 @@ struct _BtEdbKickV
   
   guint retrig_count;
   gfloat retrig_period_cur;
-  guint lcg_state[PINK_NOISE_OCTAVES];
+  guint32 lcg_state[PINK_NOISE_OCTAVES];
   gfloat lcg_noise[PINK_NOISE_OCTAVES];
   gfloat noise;
   gint16 pink_accum;
@@ -119,7 +119,7 @@ static inline gfloat logscale(gfloat min, gfloat max, gfloat base, gfloat x) {
 
 // Return a random float between -1.0 and 1.0.
 // https://www.pcg-random.org/pdf/hmc-cs-2014-0905.pdf
-static inline gfloat lcg(guint* state) {
+static inline gfloat lcg(guint32* state) {
   *state = (*state + lcg_increment) * lcg_multiplier;
 
   // Hexadecimal floating point literals are a means to define constant real values that can be exactly
@@ -128,7 +128,7 @@ static inline gfloat lcg(guint* state) {
   // https://www.pcg-random.org/posts/bounded-rands.html
   // https://www.exploringbinary.com/hexadecimal-floating-point-constants/
   // pg 57-58: http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf
-  return -1.0 + powf(0x1.0p-32 * *state, 20) * 2;
+  return 0x1.0p-32 * (gint32)*state;
 }
 
 static inline gfloat plerp(gfloat a, gfloat b, gfloat alpha, gfloat power) {
