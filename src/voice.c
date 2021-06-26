@@ -108,17 +108,21 @@ static guint signal_bt_gfx_invalidated;
   return powf(10.0f, db / 20.0f);
   }*/
 
-// https://www.pcg-random.org/pdf/hmc-cs-2014-0905.pdf
 static const guint lcg_multiplier = 1103515245;
 static const guint lcg_increment = 12345;
 
+// Return a random float between -1.0 and 1.0.
+// https://www.pcg-random.org/pdf/hmc-cs-2014-0905.pdf
 static inline gfloat lcg(guint* state) {
   *state = (*state + lcg_increment) * lcg_multiplier;
-  
+
+  // Hexadecimal floating point literals are a means to define constant real values that can be exactly
+  // represented as a floating point value.
+  //
   // https://www.pcg-random.org/posts/bounded-rands.html
   // https://www.exploringbinary.com/hexadecimal-floating-point-constants/
   // pg 57-58: http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf
-  return -1.0 + 0x1.0p-32 * *state * 2;
+  return -1.0 + powf(0x1.0p-32 * *state, 20) * 2;
 }
 
 static inline gfloat plerp(gfloat a, gfloat b, gfloat alpha, gfloat power) {
@@ -172,41 +176,51 @@ void btedb_kickv_process(
   
   const gfloat timedelta = 1.0f/rate;
 
-  gfloat overtone_vols[OVERTONES];
-  overtone_vols[0] = self->overtone0 * self->overtone_vol;
-  overtone_vols[1] = self->overtone1 * self->overtone_vol;
-  overtone_vols[2] = self->overtone2 * self->overtone_vol;
-  overtone_vols[3] = self->overtone3 * self->overtone_vol;
-  overtone_vols[4] = self->overtone4 * self->overtone_vol;
-  overtone_vols[5] = self->overtone5 * self->overtone_vol;
-  overtone_vols[6] = self->overtone6 * self->overtone_vol;
-  overtone_vols[7] = self->overtone7 * self->overtone_vol;
-  overtone_vols[8] = self->overtone8 * self->overtone_vol;
-  overtone_vols[9] = self->overtone9 * self->overtone_vol;
+  const gfloat overtone_vols[OVERTONES] = {
+    self->overtone0 * self->overtone_vol,
+    self->overtone1 * self->overtone_vol,
+    self->overtone2 * self->overtone_vol,
+    self->overtone3 * self->overtone_vol,
+    self->overtone4 * self->overtone_vol,
+    self->overtone5 * self->overtone_vol,
+    self->overtone6 * self->overtone_vol,
+    self->overtone7 * self->overtone_vol,
+    self->overtone8 * self->overtone_vol,
+    self->overtone9 * self->overtone_vol
+  };
 
   for (guint i = 0; i < requested_frames; ++i) {
+    gfloat fundamental;
+    gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
+    
     if (self->fundamental_vol != 0.0) {
-      gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
-      gfloat val = osc(&self->accum[0], timedelta, freqval, 1) * self->fundamental_vol;
-
-      for (guint j = 0; j < OVERTONES; ++j)
-        if (overtone_vols[j] != 0.0)
-          val += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
-      
-      outbuf[i] = val * amp(self, self->seconds);
+      fundamental = osc(&self->accum[0], timedelta, freqval, 1) * self->fundamental_vol;
     } else {
-      outbuf[i] = 0.0f;
+      fundamental = 0.0f;
     }
+
+    gfloat otones = 0;
+
+    if (self->overtone_vol != 0.0) {
+      for (guint j = 0; j < OVERTONES; ++j)
+        // Note: self->overtone_vols already pre-multiplied above.
+        if (overtone_vols[j] != 0.0)
+          otones += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
+    }
+
+    outbuf[i] = (fundamental + otones) * amp(self, self->seconds);
     
     // https://www.firstpr.com.au/dsp/pink-noise/#Voss-McCartney
     if (self->noise_vol != 0.0) {
-      // Add base white noise
+      // Add base white noise on each sample. Otherwise, the highest frequency noise is only every other sample.
       self->noise -= self->lcg_noise[0];
       self->lcg_noise[0] = lcg(&self->lcg_state[0]);
       self->noise += self->lcg_noise[0];
 
       // Subtracting the old noise value from an accumulated noise value avoids having to sum x stored noise values
       // each sample. As a result, some inertia is maintained if sweeping the octave value, but not a big deal.
+      //
+      // Select the noise state to update by counting trailing zeroes in the noise accumulator.
       guint update_idx = __builtin_ctz(self->pink_accum)+1;
       self->noise -= self->lcg_noise[update_idx];
       if (update_idx <= self->noise_octaves) {
