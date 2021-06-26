@@ -54,6 +54,7 @@ struct _BtEdbKickV
   gfloat noise_vol;
   gfloat fundamental_vol;
   gfloat overtone_vol;
+  gfloat overtone_freq_factor;
   gfloat overtone0;
   gfloat overtone1;
   gfloat overtone2;
@@ -160,7 +161,7 @@ static inline gfloat freq(const BtEdbKickV* const self, gfloat seconds, gfloat s
 
 static inline gfloat osc(gfloat* accum, gfloat timedelta, gfloat freqval, gfloat harmonic) {
   gfloat result = sin(*accum);
-  *accum += 2 * G_PI * timedelta * freqval * harmonic;
+  *accum += 2 * G_PI * timedelta * freqval * (harmonic+1);
   return result;
 }
 
@@ -199,7 +200,7 @@ void btedb_kickv_process(
     gfloat freqval = freq(self, self->seconds, freq_start, freq_note);
     
     if (self->fundamental_vol != 0.0) {
-      fundamental = osc(&self->accum[0], timedelta, freqval, 1) * self->fundamental_vol;
+      fundamental = osc(&self->accum[0], timedelta, freqval, 0) * self->fundamental_vol;
     } else {
       fundamental = 0.0f;
     }
@@ -210,7 +211,7 @@ void btedb_kickv_process(
       for (guint j = 0; j < OVERTONES; ++j)
         // Note: self->overtone_vols already pre-multiplied above.
         if (overtone_vols[j] != 0.0)
-          otones += osc(&self->accum[j+1], timedelta, freqval, j+2) * overtone_vols[j];
+          otones += osc(&self->accum[j+1], timedelta, freqval, (j+1)*self->overtone_freq_factor) * overtone_vols[j];
     }
 
     outbuf[i] = (fundamental + otones) * amp(self, self->seconds);
@@ -450,6 +451,10 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
+      g_param_spec_float("overtone-freq-factor", "Otone. FF", "Overtone Frequency Factor", 0, 10, 2, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
       g_param_spec_float("overtone0", "Otone 0", "Overtone 0", -1, 1, 0, flags));
     g_object_class_install_property(
       aclass, idx++,
@@ -524,6 +529,7 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "noise-shape-exp", &self->noise_shape_exp);
   btedb_properties_simple_add(self->props, "fundamental-vol", &self->fundamental_vol);
   btedb_properties_simple_add(self->props, "overtone-vol", &self->overtone_vol);
+  btedb_properties_simple_add(self->props, "overtone-freq-factor", &self->overtone_freq_factor);
   btedb_properties_simple_add(self->props, "overtone0", &self->overtone0);
   btedb_properties_simple_add(self->props, "overtone1", &self->overtone1);
   btedb_properties_simple_add(self->props, "overtone2", &self->overtone2);
