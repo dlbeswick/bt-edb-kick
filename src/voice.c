@@ -111,6 +111,11 @@ static guint signal_bt_gfx_invalidated;
 static const guint lcg_multiplier = 1103515245;
 static const guint lcg_increment = 12345;
 
+static inline gfloat logscale(gfloat min, gfloat max, gfloat base, gfloat x) {
+  gfloat logbase = logf(base);
+  return logf(MAX(1,x-min)) / logbase / (logf(max) / logbase);
+}
+
 // Return a random float between -1.0 and 1.0.
 // https://www.pcg-random.org/pdf/hmc-cs-2014-0905.pdf
 static inline gfloat lcg(guint* state) {
@@ -275,13 +280,15 @@ static const BtUiCustomGfx* on_gfx_request(BtEdbKickV* self) {
     }
   }
 
-  // Show 0.5 seconds of the frequency envelope.
+  // Show 0.5 seconds of the frequency envelope (log graph)
   gfloat data_ = MIN(MAX(freq(self, 0, 1, 0), -1), 1);
   for (int i = 0; i < GFX_WIDTH; i++) {
-    const gfloat data = MIN(MAX(freq(self, (gfloat)i/GFX_WIDTH * 0.5, 1, 0), -1), 1);
-    const guint y0 = GFX_HEIGHT - GFX_HEIGHT * data_;
-    const guint y1 = GFX_HEIGHT - GFX_HEIGHT * data;
-    for (int y = MIN(y0,y1); y < MAX(y0,y1); ++y) {
+    const gfloat data = 0.2f +
+      MIN(MAX(logscale(10, 22050, 2, 10+freq(self, (gfloat)i/GFX_WIDTH * 0.5, 1, 0)*22040), 0), 1) * 0.8f;
+    
+    const guint y0 = (GFX_HEIGHT-1) - (GFX_HEIGHT-1) * data_;
+    const guint y1 = (GFX_HEIGHT-1) - (GFX_HEIGHT-1) * data;
+    for (int y = MIN(y0,y1); y <= MAX(y0,y1); ++y) {
       g_assert(i + GFX_WIDTH * y < GFX_WIDTH*GFX_HEIGHT);
       gfx[i + GFX_WIDTH * y] = 0xFF00FFFF;
     }
