@@ -54,6 +54,10 @@ struct _BtEdbKickV
   gfloat noise_vol;
   gfloat fundamental_vol;
   gfloat overtone_vol;
+  gfloat overtone_vol_time;
+  gfloat overtone_vol_shape_a;
+  gfloat overtone_vol_shape_b;
+  gfloat overtone_vol_shape_exp;
   gfloat overtone_freq_factor;
   gfloat overtone0;
   gfloat overtone1;
@@ -68,6 +72,7 @@ struct _BtEdbKickV
   gfloat volume;
   guint retrigger;
   gfloat retrigger_period;
+  gfloat anticlick;
 
   gfloat c_tone_start;
   gfloat c_tone_time;
@@ -82,6 +87,10 @@ struct _BtEdbKickV
   gfloat c_noise_shape_a;
   gfloat c_noise_shape_b;
   gfloat c_noise_shape_exp;
+  gfloat c_overtone_vol_time;
+  gfloat c_overtone_vol_shape_a;
+  gfloat c_overtone_vol_shape_b;
+  gfloat c_overtone_vol_shape_exp;
   gfloat c_retrigger_period;
   
   guint retrig_count;
@@ -128,7 +137,11 @@ static inline gfloat lcg(guint32* state) {
   // https://www.pcg-random.org/posts/bounded-rands.html
   // https://www.exploringbinary.com/hexadecimal-floating-point-constants/
   // pg 57-58: http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf
-  return 0x1.0p-32 * (gint32)*state;
+  return -1.0f + 0x2.0p-32 * *state;
+}
+
+static inline gfloat lerp(gfloat a, gfloat b, gfloat alpha) {
+  return a + (b-a) * MAX(MIN(alpha,1),0);
 }
 
 static inline gfloat plerp(gfloat a, gfloat b, gfloat alpha, gfloat power) {
@@ -209,9 +222,12 @@ void btedb_kickv_process(
 
     if (self->overtone_vol != 0.0) {
       for (guint j = 0; j < OVERTONES; ++j)
-        // Note: self->overtone_vols already pre-multiplied above.
+        // Note: self->overtone_vols already pre-multiplied by overtone_vol above.
         if (overtone_vols[j] != 0.0)
-          otones += osc(&self->accum[j+1], timedelta, freqval, (j+1)*self->overtone_freq_factor) * overtone_vols[j];
+          otones += osc(&self->accum[j+1], timedelta, freqval, (j+1)*self->overtone_freq_factor)
+            * overtone_vols[j]
+            * decay(self->seconds, 1, 0, self->c_overtone_vol_shape_a, self->c_overtone_vol_shape_b,
+                    self->c_overtone_vol_time, self->c_overtone_vol_shape_exp);
     }
 
     outbuf[i] = (fundamental + otones) * amp(self, self->seconds);
@@ -254,7 +270,7 @@ void btedb_kickv_process(
       }
     }
     
-    outbuf[i] *= self->volume;
+    outbuf[i] *= lerp(0, self->volume, self->seconds / self->anticlick);
     
     self->seconds += timedelta;
   }
@@ -326,6 +342,10 @@ static void set_property(GObject* object, guint prop_id, const GValue* value, GP
     self->c_amp_shape_b = 0.01 * powf(10, self->amp_shape_b * 3);
     self->c_amp_time = 0.001 * powf(10, self->amp_time * 4);
     self->c_amp_shape_exp = 0.01 * powf(10, self->amp_shape_exp * 3);
+    self->c_overtone_vol_shape_a = 0.01 * powf(10, self->overtone_vol_shape_a * 3);
+    self->c_overtone_vol_shape_b = 0.01 * powf(10, self->overtone_vol_shape_b * 3);
+    self->c_overtone_vol_time = 0.001 * powf(10, self->overtone_vol_time * 4);
+    self->c_overtone_vol_shape_exp = 0.01 * powf(10, self->overtone_vol_shape_exp * 3);
     self->c_noise_shape_a = 0.01 * powf(10, self->noise_shape_a * 3);
     self->c_noise_shape_b = 0.01 * powf(10, self->noise_shape_b * 3);
     self->c_noise_time = 0.001 * powf(10, self->noise_time * 4);
@@ -451,6 +471,22 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
 
     g_object_class_install_property(
       aclass, idx++,
+      g_param_spec_float("overtone-vol-time", "Otone.Vol Tm", "Overtone Volume Time", 0, 1, 0.5, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("overtone-vol-shape-a", "Otone.Vol A", "Overtone Volume Shape A", 0, 1, 0.5, flags));
+
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("overtone-vol-shape-b", "Otone.Vol B", "Overtone Volume Shape B", 0, 1, 0.5, flags));
+
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("overtone-vol-shape-exp", "Otone.Vol Exp", "Overtone Volume Shape Exponent", 0, 1, 0, flags));
+    
+    g_object_class_install_property(
+      aclass, idx++,
       g_param_spec_float("overtone-freq-factor", "Otone. FF", "Overtone Frequency Factor", 0, 10, 2, flags));
     
     g_object_class_install_property(
@@ -483,6 +519,9 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
     g_object_class_install_property(
       aclass, idx++,
       g_param_spec_float("overtone9", "Otone 9", "Overtone 9", -1, 1, 0, flags));
+    g_object_class_install_property(
+      aclass, idx++,
+      g_param_spec_float("anticlick", "Anticlick", "Anticlick", FLT_MIN, 0.1, 0.0004, flags));
   }
 
   signal_bt_gfx_invalidated =
@@ -529,6 +568,10 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "noise-shape-exp", &self->noise_shape_exp);
   btedb_properties_simple_add(self->props, "fundamental-vol", &self->fundamental_vol);
   btedb_properties_simple_add(self->props, "overtone-vol", &self->overtone_vol);
+  btedb_properties_simple_add(self->props, "overtone-vol-time", &self->overtone_vol_time);
+  btedb_properties_simple_add(self->props, "overtone-vol-shape-a", &self->overtone_vol_shape_a);
+  btedb_properties_simple_add(self->props, "overtone-vol-shape-b", &self->overtone_vol_shape_b);
+  btedb_properties_simple_add(self->props, "overtone-vol-shape-exp", &self->overtone_vol_shape_exp);
   btedb_properties_simple_add(self->props, "overtone-freq-factor", &self->overtone_freq_factor);
   btedb_properties_simple_add(self->props, "overtone0", &self->overtone0);
   btedb_properties_simple_add(self->props, "overtone1", &self->overtone1);
@@ -543,6 +586,7 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   btedb_properties_simple_add(self->props, "volume", &self->volume);
   btedb_properties_simple_add(self->props, "retrigger", &self->retrigger);
   btedb_properties_simple_add(self->props, "retrigger-period", &self->retrigger_period);
+  btedb_properties_simple_add(self->props, "anticlick", &self->anticlick);
 
   self->tones = gstbt_tone_conversion_new(GSTBT_TONE_CONVERSION_EQUAL_TEMPERAMENT);
   self->seconds = 3600;
