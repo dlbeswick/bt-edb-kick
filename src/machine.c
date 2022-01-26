@@ -34,8 +34,6 @@ GType btedb_kick_get_type(void);
 
 #define MAX_VOICES 16
 
-static guint signal_bt_gfx_invalidated;
-
 typedef struct {
   GstBtAudioSynth parent;
 
@@ -68,12 +66,15 @@ static void child_proxy_interface_init (gpointer g_iface, gpointer iface_data) {
   iface->get_children_count = child_proxy_get_children_count;
 }
 
+static void gstbt_ui_custom_gfx_interface_init(GstBtUiCustomGfxInterface *iface);
+
 G_DEFINE_TYPE_WITH_CODE (
   BtEdbKick,
   btedb_kick,
   GSTBT_TYPE_AUDIO_SYNTH,
-  G_IMPLEMENT_INTERFACE (GST_TYPE_CHILD_PROXY, child_proxy_interface_init)
-  G_IMPLEMENT_INTERFACE (GSTBT_TYPE_CHILD_BIN, NULL))
+  G_IMPLEMENT_INTERFACE(GST_TYPE_CHILD_PROXY, child_proxy_interface_init)
+  G_IMPLEMENT_INTERFACE(GSTBT_TYPE_CHILD_BIN, NULL)
+  G_IMPLEMENT_INTERFACE(GSTBT_UI_TYPE_CUSTOM_GFX, gstbt_ui_custom_gfx_interface_init))
 
 static gboolean plugin_init(GstPlugin* plugin) {
   GST_DEBUG_CATEGORY_INIT(
@@ -106,14 +107,12 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
         "channels = (int) 1")
     );
 
-static const BtUiCustomGfx* on_gfx_request(BtEdbKick* self) {
-  BtUiCustomGfx* result;
-  g_signal_emit_by_name(self->voices[0], "bt-gfx-request", &result);
-  return result;
+static const GstBtUiCustomGfxResponse* on_gfx_request(GstBtUiCustomGfx* self) {
+  return gstbt_ui_custom_gfx_request(GSTBT_UI_CUSTOM_GFX(((BtEdbKick*)self)->voices[0]));
 }
 
 static void on_voice_gfx_invalidated(void* voice, BtEdbKick* self) {
-  g_signal_emit(self, signal_bt_gfx_invalidated, 0);
+  g_signal_emit_by_name(self, "gstbt-ui-custom-gfx-invalidated", 0);
 }
 
 static void set_property (GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
@@ -188,30 +187,6 @@ static void btedb_kick_class_init(BtEdbKickClass* const klass) {
     GstBtAudioSynthClass* const aclass = (GstBtAudioSynthClass*)klass;
     aclass->process = process;
   }
-
-  // These signals are delegated to the first child voice.
-  signal_bt_gfx_invalidated =
-    g_signal_new (
-      "bt-gfx-invalidated",
-      G_OBJECT_CLASS_TYPE(klass),
-      G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
-      0,
-      NULL /* accumulator */,
-      NULL /* accumulator data */,
-      NULL /* C marshaller */,
-      G_TYPE_NONE /* return_type */,
-      0     /* n_params */);
-
-  g_signal_new_class_handler (
-    "bt-gfx-request",
-    G_OBJECT_CLASS_TYPE(klass),
-    G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
-    G_CALLBACK(on_gfx_request),
-    NULL /* accumulator */,
-    NULL /* accumulator data */,
-    NULL /* C marshaller */,
-    G_TYPE_POINTER /* return_type */,
-    0     /* n_params */);
 }
 
 static void btedb_kick_init(BtEdbKick* const self) {
@@ -230,5 +205,10 @@ static void btedb_kick_init(BtEdbKick* const self) {
     self->voices[i] = voice;
   }
     
-  g_signal_connect (self->voices[0], "bt-gfx-invalidated", G_CALLBACK (on_voice_gfx_invalidated), self);
+  g_signal_connect (self->voices[0], "gstbt-ui-custom-gfx-invalidated", G_CALLBACK (on_voice_gfx_invalidated), self);
+}
+
+static void gstbt_ui_custom_gfx_interface_init(GstBtUiCustomGfxInterface *iface)
+{
+  iface->request = on_gfx_request;
 }

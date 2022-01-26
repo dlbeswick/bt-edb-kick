@@ -15,6 +15,11 @@ libbt_edb_kick_la_CFLAGS = $(PKGCONFIG_DEPS_CFLAGS) $(OPTIMIZE_CFLAGS) \
 	-fvisibility=hidden
 libbt_edb_kick_la_LDFLAGS = $(PKGCONFIG_DEPS_LIBS) -module -avoid-version
 
+presetdir = $(datadir)/gstreamer-$(GST_MAJORMINOR)/presets
+preset_DATA = presets/BtEdbKick.prs
+
+EXTRA_DIST = $(preset_DATA)
+
 # Remove 'la' file as the generated lib isn't intended to be linked with others.
 install-data-hook:
 	$(RM) $(DESTDIR)$(plugindir)/lib$(GST_PLUGIN_NAME).la

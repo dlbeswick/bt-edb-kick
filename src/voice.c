@@ -106,13 +106,14 @@ struct _BtEdbKickV
   BtEdbPropertiesSimple* props;
   GstBtToneConversion* tones;
 
-  BtUiCustomGfx gfx;
+  GstBtUiCustomGfxResponse gfx;
   guint32 gfx_data[GFX_WIDTH * GFX_HEIGHT];
 };
 
-G_DEFINE_TYPE(BtEdbKickV, btedb_kickv, GST_TYPE_OBJECT)
+static void gstbt_ui_custom_gfx_interface_init(GstBtUiCustomGfxInterface* iface);
 
-static guint signal_bt_gfx_invalidated;
+G_DEFINE_TYPE_WITH_CODE(BtEdbKickV, btedb_kickv, GST_TYPE_OBJECT,
+                        G_IMPLEMENT_INTERFACE(GSTBT_UI_TYPE_CUSTOM_GFX, gstbt_ui_custom_gfx_interface_init))
 
 /*static gfloat db_to_gain(gfloat db) {
   return powf(10.0f, db / 20.0f);
@@ -279,7 +280,9 @@ void btedb_kickv_process(
     self->accum[i] = fmod(self->accum[i], 2 * G_PI);
 }
 
-static const BtUiCustomGfx* on_gfx_request(BtEdbKickV* self) {
+static const GstBtUiCustomGfxResponse* on_gfx_request(GstBtUiCustomGfx* iface) {
+  BtEdbKickV* self = (BtEdbKickV*)iface;
+  
   guint32* const gfx = self->gfx.data;
 
   for (int i = 0; i < GFX_WIDTH*GFX_HEIGHT; ++i) {
@@ -352,7 +355,7 @@ static void set_property(GObject* object, guint prop_id, const GValue* value, GP
     self->c_noise_shape_exp = 0.01 * powf(10, self->noise_shape_exp * 3);
     self->c_retrigger_period = 0.001 * powf(10, self->retrigger_period * 3);
   
-    g_signal_emit(self, signal_bt_gfx_invalidated, 0);
+    g_signal_emit_by_name(self, "gstbt-ui-custom-gfx-invalidated", 0);
   }
 }
 
@@ -523,29 +526,6 @@ static void btedb_kickv_class_init(BtEdbKickVClass* const klass) {
       aclass, idx++,
       g_param_spec_float("anticlick", "Anticlick", "Anticlick", FLT_MIN, 0.1, 0.0004, flags));
   }
-
-  signal_bt_gfx_invalidated =
-    g_signal_new (
-      "bt-gfx-invalidated",
-      G_OBJECT_CLASS_TYPE(klass),
-      G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
-      0 /* offset */,
-      NULL /* accumulator */,
-      NULL /* accumulator data */,
-      NULL /* C marshaller */,
-      G_TYPE_NONE /* return_type */,
-      0     /* n_params */);
-  
-  g_signal_new_class_handler (
-    "bt-gfx-request",
-    G_OBJECT_CLASS_TYPE(klass),
-    G_SIGNAL_ACTION | G_SIGNAL_RUN_LAST,
-    G_CALLBACK (on_gfx_request),
-    NULL /* accumulator */,
-    NULL /* accumulator data */,
-    NULL /* C marshaller */,
-    G_TYPE_POINTER /* return_type */,
-    0     /* n_params */);
 }
 
 static void btedb_kickv_init(BtEdbKickV* const self) {
@@ -594,6 +574,12 @@ static void btedb_kickv_init(BtEdbKickV* const self) {
   for (guint i = 0; i < PINK_NOISE_OCTAVES; ++i)
     self->lcg_state[i] = i;
 
-  self->gfx = (struct BtUiCustomGfx){0, GFX_WIDTH, GFX_HEIGHT, self->gfx_data};
+  self->gfx = (struct GstBtUiCustomGfxResponse){0, GFX_WIDTH, GFX_HEIGHT, self->gfx_data};
   self->pink_accum = 1;
 }
+
+static void gstbt_ui_custom_gfx_interface_init(GstBtUiCustomGfxInterface *iface)
+{
+  iface->request = on_gfx_request;
+}
+
